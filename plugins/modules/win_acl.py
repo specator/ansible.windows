@@ -9,7 +9,7 @@
 DOCUMENTATION = r'''
 ---
 module: win_acl
-short_description: Set file/directory/registry permissions for a system user or group
+short_description: Set file/directory/registry/certificate permissions for a system user or group
 description:
 - Add or remove rights/permissions for a given user or group for the specified
   file, folder, registry key or AppPool identifies.
@@ -45,6 +45,7 @@ options:
       FileSystemRights U(https://msdn.microsoft.com/en-us/library/system.security.accesscontrol.filesystemrights.aspx).
     - If C(path) is a registry key, rights can be any right under MSDN
       RegistryRights U(https://msdn.microsoft.com/en-us/library/system.security.accesscontrol.registryrights.aspx).
+    - If C(path) is a certificate key, rights can be C(Read) and/or C(FullControl). (Added in 1.13.0)
     type: str
     required: yes
   inherit:
@@ -54,7 +55,7 @@ options:
       C(ObjectInherit).
     - For more information on the choices see MSDN InheritanceFlags enumeration
       at U(https://msdn.microsoft.com/en-us/library/system.security.accesscontrol.inheritanceflags.aspx).
-    - Defaults to C(ContainerInherit, ObjectInherit) for Directories.
+    - Defaults to C(ContainerInherit, ObjectInherit) for Directories and C(None) for Certificates.
     type: str
     choices: [ ContainerInherit, ObjectInherit ]
   propagation:
@@ -62,6 +63,7 @@ options:
     - Propagation flag on the ACL rules.
     - For more information on the choices see MSDN PropagationFlags enumeration
       at U(https://msdn.microsoft.com/en-us/library/system.security.accesscontrol.propagationflags.aspx).
+    - Defaults to C(None) for Certificates.
     type: str
     choices: [ InheritOnly, None, NoPropagateInherit ]
     default: "None"
@@ -129,4 +131,12 @@ EXAMPLES = r'''
     rights: Read,Write,Modify,FullControl,Delete
     type: deny
     state: present
+
+- name: Set certificate private key FullControl to Fed-Phil
+  ansible.windows.win_acl:
+    path: Cert:\LocalMachine\My\168ba8c488463f88c6648466a22484b6189e165f
+    user: Fed-Phil
+    type: allow
+    state: present
+    rights: FullControl
 '''

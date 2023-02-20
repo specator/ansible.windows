@@ -3,6 +3,7 @@
 # Copyright: (c) 2015, Phil Schwartz <schwartzmx@gmail.com>
 # Copyright: (c) 2015, Trond Hindenes
 # Copyright: (c) 2015, Hans-Joachim Kliemeck <git@kliemeck.de>
+# Copyright: (c) 2022, Nail Mukhametshin <sayrys@gmail.com>
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 #Requires -Module Ansible.ModuleUtils.Legacy
@@ -53,7 +54,7 @@ Function SetPrivilegeTokens() {
 
     $adminRole = [System.Security.Principal.WindowsBuiltInRole]::Administrator
     $myWindowsID = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-    $myWindowsPrincipal = new-object System.Security.Principal.WindowsPrincipal($myWindowsID)
+    $myWindowsPrincipal = New-Object System.Security.Principal.WindowsPrincipal($myWindowsID)
 
 
     if ($myWindowsPrincipal.IsInRole($adminRole)) {
@@ -169,10 +170,21 @@ Try {
     If ($path_item.PSProvider.Name -eq "Registry") {
         $objACE = New-Object System.Security.AccessControl.RegistryAccessRule ($objUser, $colRights, $InheritanceFlag, $PropagationFlag, $objType)
     }
+    ElseIf ($path_item.PSProvider.Name -eq "Certificate") {
+        $objACE = New-Object System.Security.AccessControl.FileSystemAccessRule ($objUser, $colRights, "None", "None", $objType)
+        $rsaCert = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($(Get-Item $path))
+        If (!$rsaCert) {
+            Fail-Json -obj $result -message "an exception occurred when adding the specified rule - Certificate $path does not have private key"
+        }
+        Else {
+            $fileName = $rsaCert.key.UniqueName
+            $path = "$env:ALLUSERSPROFILE\Microsoft\Crypto\Keys\$fileName"
+        }
+    }
     Else {
         $objACE = New-Object System.Security.AccessControl.FileSystemAccessRule ($objUser, $colRights, $InheritanceFlag, $PropagationFlag, $objType)
     }
-    $objACL = Get-ACL -LiteralPath $path
+    $objACL = Get-Acl -LiteralPath $path
 
     # Check if the ACE exists already in the objects ACL list
     $match = $false
@@ -211,7 +223,7 @@ Try {
         Try {
             $objACL.AddAccessRule($objACE)
             Try {
-                Set-ACL -LiteralPath $path -AclObject $objACL
+                Set-Acl -LiteralPath $path -AclObject $objACL
             }
             Catch {
                 (Get-Item -LiteralPath $path).SetAccessControl($objACL)
@@ -226,7 +238,7 @@ Try {
         Try {
             $objACL.RemoveAccessRule($objACE)
             If ($path_item.PSProvider.Name -eq "Registry") {
-                Set-ACL -LiteralPath $path -AclObject $objACL
+                Set-Acl -LiteralPath $path -AclObject $objACL
             }
             else {
                 (Get-Item -LiteralPath $path).SetAccessControl($objACL)
