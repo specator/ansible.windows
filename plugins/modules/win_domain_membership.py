@@ -10,6 +10,10 @@ short_description: Manage domain/workgroup membership for a Windows host
 description:
 - Manages domain membership or workgroup membership for a Windows host. Also supports hostname changes.
 - This module may require subsequent use of the M(ansible.windows.win_reboot) action if changes are made.
+deprecated:
+  removed_in: 3.0.0
+  why: This module has been moved into the C(microsoft.ad) collection.
+  alternative: Use the M(microsoft.ad.membership) module instead.
 options:
   dns_domain_name:
     description:
@@ -70,7 +74,7 @@ EXAMPLES = r'''
 # Ansible connection should use local credentials if possible.
 # If a reboot is required, the second task will trigger one and wait until the host is available.
 - hosts: winclient
-  gather_facts: no
+  gather_facts: false
   tasks:
   - ansible.windows.win_domain_membership:
       dns_domain_name: ansible.vagrant
@@ -90,7 +94,7 @@ EXAMPLES = r'''
 # Ansible connection should use local credentials if possible.
 # The domain admin credentials can be sourced from a vault-encrypted variable
 - hosts: winclient
-  gather_facts: no
+  gather_facts: false
   tasks:
   - ansible.windows.win_domain_membership:
       workgroup_name: mywg

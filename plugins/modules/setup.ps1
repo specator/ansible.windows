@@ -43,18 +43,16 @@ $gatherSubset = $module.Params.gather_subset
 $gatherTimeout = $module.Params.gather_timeout
 
 $osversion = [Environment]::OSVersion.Version
-if ($osversion -lt [version]"6.2") {
-    # Server 2008, 2008 R2, and Windows 7 are not tested in CI and we want to let customers know about it before
-    # removing support altogether.
+if ($osversion -lt [version]"10.0") {
+    # Anything older than Server 2016 is not supported by Ansible or this collection.
     $versionString = "{0}.{1}" -f ($osversion.Major, $osversion.Minor)
-    $module.Warn("The Windows version '$versionString' will no longer be supported or tested in future releases")
+    $module.Warn("The Windows version '$versionString' is no longer supported or tested by Ansible.")
 }
 
 Add-CSharpType -AnsibleModule $module -References @'
 using Microsoft.Win32.SafeHandles;
 using System;
 using System.Collections.Generic;
-using System.Runtime.ConstrainedExecution;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -228,7 +226,6 @@ namespace Ansible.Windows.Setup
             base.SetHandle(Marshal.AllocHGlobal(cb));
         }
 
-        [ReliabilityContract(Consistency.WillNotCorruptState, Cer.MayFail)]
         protected override bool ReleaseHandle()
         {
             Marshal.FreeHGlobal(handle);
@@ -240,7 +237,6 @@ namespace Ansible.Windows.Setup
     {
         public SafeDsMemoryBuffer() : base(true) { }
 
-        [ReliabilityContract(Consistency.WillNotCorruptState, Cer.MayFail)]
         protected override bool ReleaseHandle()
         {
             NativeMethods.DsRoleFreeMemory(this.handle);
@@ -252,7 +248,6 @@ namespace Ansible.Windows.Setup
     {
         public SafeNetAPIBuffer() : base(true) { }
 
-        [ReliabilityContract(Consistency.WillNotCorruptState, Cer.MayFail)]
         protected override bool ReleaseHandle()
         {
             NativeMethods.NetApiBufferFree(this.handle);
@@ -516,8 +511,13 @@ namespace Ansible.Windows.Setup
             // Older standards could use a 2 digit year that indicates 19yy.
             string dateFormat = date.Length == 10 ? "MM/dd/yyyy" : "MM/dd/yy";
 
-            DateTime rawDateTime = DateTime.ParseExact(date, dateFormat, null);
-            return DateTime.SpecifyKind(rawDateTime, DateTimeKind.Utc);
+            DateTime rawDateTime;
+            if (DateTime.TryParseExact(date, dateFormat, null, System.Globalization.DateTimeStyles.None, out rawDateTime)) {
+                return DateTime.SpecifyKind(rawDateTime, DateTimeKind.Utc);
+            }
+            else {
+                return null;
+            }
         }
 
         private int CalculateCount(byte count1, ushort count2)

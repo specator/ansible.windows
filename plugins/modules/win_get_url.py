@@ -26,7 +26,7 @@ options:
     required: yes
   force:
     description:
-    - If C(yes), will download the file every time and replace the file if the contents change. If C(no), will only
+    - If C(true), will download the file every time and replace the file if the contents change. If C(false), will only
       download the file if it does not exist or the remote file has been
       modified more recently than the local file.
     - This works by sending an http HEAD request to retrieve last modified
@@ -67,23 +67,6 @@ options:
   url_timeout:
     aliases:
     - timeout
-
-  # Following defined in the web_request fragment but the module contains deprecated aliases for backwards compatibility.
-  url_username:
-    description:
-    - The username to use for authentication.
-    - The alias I(user) and I(username) is deprecated and will be removed on
-      the major release after C(2022-07-01).
-    aliases:
-    - user
-    - username
-  url_password:
-    description:
-    - The password for I(url_username).
-    - The alias I(password) is deprecated and will be removed on the major
-      release after C(2022-07-01).
-    aliases:
-    - password
 notes:
 - If your URL includes an escaped slash character (%2F) this module will convert it to a real slash.
   This is a result of the behaviour of the System.Uri class as described in
@@ -110,7 +93,7 @@ EXAMPLES = r'''
   ansible.windows.win_get_url:
     url: http://www.example.com/earthrise.jpg
     dest: C:\Users\RandomUser\earthrise.jpg
-    force: no
+    force: false
 
 - name: Download earthrise.jpg to specified path through a proxy server.
   ansible.windows.win_get_url:
@@ -157,7 +140,7 @@ checksum_dest:
     sample: 6e642bb8dd5c2e027bf21dd923337cbb4214f827
 checksum_src:
     description: <algorithm> checksum of the remote resource
-    returned: force=yes or dest did not exist
+    returned: force=true or dest did not exist
     type: str
     sample: 6e642bb8dd5c2e027bf21dd923337cbb4214f827
 elapsed:

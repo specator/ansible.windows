@@ -82,14 +82,6 @@ options:
     - This is only valid for MSI files, use C(arguments) for the C(registry)
       provider.
     type: path
-  password:
-    description:
-    - The password for C(user_name), must be set when C(user_name) is.
-    - This option is deprecated in favour of using become, see examples for
-      more information. Will be removed on the major release after
-      C(2022-07-01).
-    type: str
-    aliases: [ user_password ]
   path:
     description:
     - Location of the package to be installed or uninstalled.
@@ -121,10 +113,7 @@ options:
     - This SHOULD be set when the package is an C(exe), or the path is a url
       or a network share and credential delegation is not being used. The
       C(creates_*) options can be used instead but is not recommended.
-    - The alias I(productid) is deprecated and will be removed on the major
-      release after C(2022-07-01).
     type: str
-    aliases: [ productid ]
   provider:
     description:
     - Set the package provider to use when searching for a package.
@@ -164,35 +153,20 @@ options:
       installed or not.
     - For all providers but C(auto), the I(path) can be used for idempotency
       checks if it is locally accesible filesystem path.
-    - The alias I(ensure) is deprecated and will be removed on the major
-      release after C(2022-07-01).
     type: str
     choices: [ absent, present ]
     default: present
-    aliases: [ ensure ]
-  username:
-    description:
-    - Username of an account with access to the package if it is located on a
-      file share.
-    - This is only needed if the WinRM transport is over an auth method that
-      does not support credential delegation like Basic or NTLM or become is
-      not used.
-    - This option is deprecated in favour of using become, see examples for
-      more information. Will be removed on the major release after
-      C(2022-07-01).
-    type: str
-    aliases: [ user_name ]
   wait_for_children:
     description:
     - The module will wait for the process it spawns to finish but any
       processes spawned in that child process as ignored.
-    - Set to C(yes) to wait for all descendent processes to finish before the
+    - Set to C(true) to wait for all descendent processes to finish before the
       module returns.
     - This is useful if the install/uninstaller is just a wrapper which then
       calls the actual installer as its own child process. When this option is
-      C(yes) then the module will wait for both processes to finish before
+      C(true) then the module will wait for both processes to finish before
       returning.
-    - This should not be required for most installers and setting to C(yes)
+    - This should not be required for most installers and setting to C(true)
       could result in the module not returning until the process it is waiting
       for has been stopped manually.
     - Requires Windows Server 2012 or Windows 8 or newer to use.
@@ -256,6 +230,29 @@ EXAMPLES = r'''
     state: present
     log_path: D:\logs\vcredist_x64-exe-{{lookup('pipe', 'date +%Y%m%dT%H%M%S')}}.log
 
+- name: Install Application from msi with multiple properties for installer
+  ansible.windows.win_package:
+    path: C:\temp\Application.msi
+    state: present
+    arguments: >-
+      SERVICE=1
+      DBNAME=ApplicationDB
+      DBSERVER=.\SQLEXPRESS
+      INSTALLDIR="C:\Program Files (x86)\App lication\App Server"
+
+- name: Install Microsoft® SQL Server® 2019 Express (DPAPI example)
+  ansible.windows.win_package:
+    path: C:\temp\SQLEXPR_x64_ENU\SETUP.EXE
+    product_id: Microsoft SQL Server SQL2019
+    arguments:
+      - SAPWD=VeryHardPassword
+      - /ConfigurationFile=C:\temp\configuration.ini
+  become: true
+  vars:
+    ansible_become_method: runas
+    ansible_become_user: "{{ user }}"
+    ansible_become_pass: "{{ password }}"
+
 - name: Uninstall Remote Desktop Connection Manager
   ansible.windows.win_package:
     product_id: '{0240359E-6A4C-4884-9E94-B397A02D893C}'
@@ -278,7 +275,7 @@ EXAMPLES = r'''
     product_id: 7-Zip
     arguments: /S
     state: present
-  become: yes
+  become: true
   become_method: runas
   become_flags: logon_type=new_credential logon_flags=netcredentials_only
   vars:

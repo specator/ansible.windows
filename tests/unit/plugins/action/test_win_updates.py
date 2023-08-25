@@ -3,19 +3,19 @@
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 # Make coding more python3-ish
-from __future__ import (absolute_import, division, print_function)
-from sys import call_tracing
+from __future__ import absolute_import, division, print_function
+
 __metaclass__ = type
 
 import ntpath
+import json
 import os
+import re
+from unittest.mock import MagicMock
 
-from ansible.module_utils.common.text.converters import to_bytes
+from ansible.errors import AnsibleConnectionFailure
 from ansible.playbook.task import Task
-
-from ansible_collections.ansible.windows.tests.unit.compat.mock import MagicMock
 from ansible_collections.ansible.windows.plugins.action import win_updates
-
 
 # Some raw info on the updates in the test expectations
 UPDATE_INFO = {
@@ -78,39 +78,77 @@ UPDATE_INFO = {
 }
 
 
-class UpdateProgressHelper:
-    """Mocks the functionality of POLL_SCRIPT to get update results for testing"""
+class UpdateModuleMock:
+    """Mocks the execute_module calls for win_updates"""
 
-    def __init__(self, test_name, default_rc=0, default_stderr=b''):
+    def __init__(
+        self,
+        test_name,
+        module_arg_return,
+    ):
         self._path = os.path.abspath(os.path.join(__file__, '..', '..', '..', 'test_data', 'win_updates', test_name))
         self._reader = self._read_gen()
-        self._rc = default_rc
-        self._stderr = default_stderr
+        self._module_arg_return = module_arg_return
+        self._is_start = True
 
-    def poll(self, cmd, **kwargs):
+    def __iter__(self):
+        return self
+
+    def __next__(self):
         return next(self._reader)
 
     def _read_gen(self):
-        offset = 0
-        lines = []
+        output = []
         with open(self._path, mode='rb') as fd:
-            while True:
-                line = fd.readline().strip()
+            for line in fd:
+                if self._is_start:
+                    yield {
+                        'changed': False,
+                        'invocation': {'module_args': self._module_arg_return},
+                        'cancel_options': {
+                            'cancel_id': 'cancel_id',
+                            'task_pid': 666,
+                        },
+                        'poll_options': {
+                            'pipe_name': 'pipe_name',
+                        },
+                    }
+                    self._is_start = False
 
-                # Every blank line is treated as no more data is available and the script should return the values
-                # retrieved. A subsequent call will continue to return the remaining data.
+                line = line.strip()
+
+                if line == b'FAILURE':
+                    yield AnsibleConnectionFailure("connection error")
+                    continue
+
                 if not line:
-                    lines.append(to_bytes(offset))
-                    b_stdout = b'\n'.join(lines)
-                    lines = []
-                    yield self._rc, b_stdout, self._stderr
+                    if not output:
+                        continue
 
-                lines.append(line)
-                offset += len(line)
+                    result = {
+                        'changed': False,
+                        'output': output,
+                    }
+                    output = []
+                    yield result
+                    continue
+
+                parsed_line = json.loads(line)
+                if 'task' in parsed_line:
+                    output.append(parsed_line)
+
+                else:
+                    self._is_start = True
+                    yield parsed_line
 
 
-def mock_connection_init(test_id, default_rc=0, default_stderr=b''):
-    progress_helper = UpdateProgressHelper(test_id, default_rc=default_rc, default_stderr=default_stderr)
+def mock_connection_init(test_id, default_rc=0, default_stderr=b'', newline_separator=b'\n'):
+    progress_helper = UpdateModuleMock(
+        test_id,
+        default_rc=default_rc,
+        default_stderr=default_stderr,
+        newline_separator=newline_separator,
+    )
     mock_connection = MagicMock()
     mock_connection._shell.tmpdir = 'shell_tmpdir'
     mock_connection._shell.join_path = ntpath.join
@@ -136,21 +174,17 @@ def win_updates_init(task_args, async_val=0, check_mode=False, connection=None):
     return plugin
 
 
-def run_action(monkeypatch, test_id, task_vars, check_mode=False, poll_rc=0, poll_stderr=b''):
+def run_action(monkeypatch, test_id, task_vars, check_mode=False, poll_rc=0, poll_stderr=b'', poll_newline_separator=b'\n'):
     module_arg_return = task_vars.copy()
-    module_arg_return['_wait'] = False
 
-    plugin = win_updates_init(task_vars, check_mode=check_mode,
-                              connection=mock_connection_init(test_id, default_rc=poll_rc, default_stderr=poll_stderr))
+    plugin = win_updates_init(
+        task_vars,
+        check_mode=check_mode,
+        connection=MagicMock(),
+    )
     execute_module = MagicMock()
-    execute_module.return_value = {
-        'invocation': {'module_args': module_arg_return},
-        'output_path': 'update_output_path',
-        'task_pid': 666,
-        'cancel_id': 'update_cancel_id',
-    }
+    execute_module.side_effect = UpdateModuleMock(test_id, module_arg_return).__iter__()
     monkeypatch.setattr(plugin, '_execute_module', execute_module)
-    monkeypatch.setattr(plugin, '_transfer_file', MagicMock())
 
     return plugin.run()
 
@@ -158,7 +192,7 @@ def run_action(monkeypatch, test_id, task_vars, check_mode=False, poll_rc=0, pol
 def test_run_with_async(monkeypatch):
     plugin = win_updates_init({}, async_val=1)
     execute_module = MagicMock()
-    execute_module.return_value = {'invocation': {'module_args': {'_wait': True, 'accept_list': []}}, 'updates': ['test']}
+    execute_module.return_value = {'invocation': {'module_args': {'accept_list': [], '_operation_options': {'wait': True}}}, 'updates': ['test']}
     monkeypatch.setattr(plugin, '_execute_module', execute_module)
 
     # Running with async should just call the module and return back the result - sans the _wait invocation arg
@@ -167,8 +201,7 @@ def test_run_with_async(monkeypatch):
 
     assert execute_module.call_count == 1
     assert execute_module.call_args[1]['module_name'] == 'ansible.windows.win_updates'
-    assert execute_module.call_args[1]['module_args']['_wait']
-    assert execute_module.call_args[1]['module_args']['_output_path'] is None
+    assert execute_module.call_args[1]['module_args']['_operation_options'] == {'wait': True}
     assert execute_module.call_args[1]['task_vars'] == {}
 
 
@@ -194,13 +227,10 @@ def test_failed_to_start_module(monkeypatch):
 
 
 def test_failure_with_poll_script(monkeypatch):
-    actual = run_action(monkeypatch, 'fail_poll_script.txt', {}, poll_rc=1, poll_stderr=b'stderr msg')
+    actual = run_action(monkeypatch, 'fail_poll_script.txt', {})
 
-    assert actual['rc'] == 1
-    assert actual['stdout'] == 'stdout message\n14'
-    assert actual['stderr'] == 'stderr msg'
     assert actual['failed']
-    assert actual['msg'] == 'Failed to poll update task, see rc, stdout, stderr for more info'
+    assert actual['msg'] == 'Error message during polling'
     assert 'exception' in actual
     assert actual['found_update_count'] == 0
     assert actual['failed_update_count'] == 0
@@ -209,14 +239,14 @@ def test_failure_with_poll_script(monkeypatch):
     assert actual['updates'] == {}
 
 
-def test_poll_script_invalid_json_output(monkeypatch):
-    actual = run_action(monkeypatch, 'fail_poll_script_invalid_json.txt', {}, poll_rc=0, poll_stderr=b'stderr msg')
+def test_failure_with_poll_script_critical_stdout(monkeypatch):
+    actual = run_action(monkeypatch, 'fail_poll_script_critical_stdout.txt', {})
 
-    assert actual['rc'] == 0
-    assert actual['stdout'] == '{"task":unquoted}\n17'
-    assert actual['stderr'] == 'stderr msg'
+    assert actual['rc'] == 1
+    assert actual['stdout'] == "stdout data"
+    assert actual['stderr'] == "stderr data"
     assert actual['failed']
-    assert actual['msg'].startswith('Failed to decode poll result json: ')
+    assert actual['msg'] == "Failure while running win_updates poll"
     assert 'exception' in actual
     assert actual['found_update_count'] == 0
     assert actual['failed_update_count'] == 0
@@ -240,6 +270,7 @@ def test_install_with_multiple_reboots(monkeypatch):
     assert reboot_mock.call_count == 2
     assert actual['changed']
     assert not actual['reboot_required']
+    assert actual['rebooted'] is True
     assert actual['found_update_count'] == 8
     assert actual['failed_update_count'] == 0
     assert actual['installed_update_count'] == 8
@@ -269,6 +300,7 @@ def test_install_without_reboot(monkeypatch):
     assert reboot_mock.call_count == 0
     assert actual['changed']
     assert actual['reboot_required']
+    assert actual['rebooted'] is False
     assert actual['found_update_count'] == 3
     assert actual['failed_update_count'] == 0
     assert actual['installed_update_count'] == 3
@@ -316,6 +348,7 @@ def test_install_with_initial_reboot_required(monkeypatch):
     assert reboot_mock.call_count == 2
     assert actual['changed']
     assert not actual['reboot_required']
+    assert actual['rebooted'] is True
     assert actual['found_update_count'] == 6
     assert actual['failed_update_count'] == 0
     assert actual['installed_update_count'] == 5  # 1 found update was already installed at the beginning
@@ -351,6 +384,7 @@ def test_install_with_reboot_fail(monkeypatch):
     assert reboot_mock.call_count == 1
     assert not actual['changed']
     assert actual['reboot_required']
+    assert actual['rebooted'] is True
     assert actual['failed']
     assert actual['msg'] == 'Failed to reboot host: Failure msg from reboot'
     assert actual['found_update_count'] == 6
@@ -383,6 +417,7 @@ def test_install_with_reboot_check_mode(monkeypatch):
     assert reboot_mock.call_count == 0
     assert actual['changed']
     assert not actual['reboot_required']
+    assert actual['rebooted'] is True
     assert 'failed' not in actual
     assert 'msg' not in actual
     assert actual['found_update_count'] == 6
@@ -415,9 +450,10 @@ def test_install_reboot_with_two_failures(monkeypatch):
     assert reboot_mock.call_count == 1
     assert actual['changed']
     assert not actual['reboot_required']
+    assert actual['rebooted'] is True
     assert actual['failed']
     assert actual['msg'] == 'Searching for updates: Exception from HRESULT: 0x80240032 - The search criteria string was invalid ' \
-        '(WU_E_INVALID_CRITERIA 80240032)'
+        '(WU_E_INVALID_CRITERIA 0x80240032)'
     assert 'exception' in actual
     assert actual['found_update_count'] == 0
     assert actual['failed_update_count'] == 0
@@ -440,6 +476,7 @@ def test_install_with_initial_reboot_required_but_no_reboot(monkeypatch):
     assert actual['failed']
     assert actual['msg'] == 'A reboot is required before more updates can be installed'
     assert actual['reboot_required']
+    assert actual['rebooted'] is False
     assert actual['found_update_count'] == 5
     assert actual['failed_update_count'] == 0
     assert actual['installed_update_count'] == 0
@@ -508,6 +545,7 @@ def test_fail_install(monkeypatch):
     assert actual['changed']
     assert actual['failed']
     assert actual['reboot_required']
+    assert actual['rebooted'] is False
     assert actual['found_update_count'] == 2
     assert actual['failed_update_count'] == 1
     assert actual['installed_update_count'] == 1
@@ -542,69 +580,46 @@ def test_fail_install(monkeypatch):
         if u_info['kb'] == '2267602':
             assert not u['installed']
             assert u['failure_hresult_code'] == 2147944003
-            assert u['failure_msg'] == 'Unknown WUA HRESULT 2147944003 (UNKNOWN 80070643)'
+            assert u['failure_msg'] == 'Unknown WUA HRESULT 2147944003 (UNKNOWN 0x80070643)'
 
         else:
             assert u['installed']
             assert 'failure_hresult_code' not in u
 
 
-def test_reboot_with_tmpdir_cleanup(monkeypatch):
-    reboot_mock = MagicMock()
-    reboot_mock.return_value = {'failed': False}
-    monkeypatch.setattr(win_updates, 'reboot_host', reboot_mock)
-
-    mock_connection = mock_connection_init('reboot_with_tmpdir_cleanup.txt')
-
-    module_arg_return = {
-        'category_names': '*',
-        'state': 'installed',
-        'reboot': 'yes',
-    }
-    plugin = win_updates_init(module_arg_return, connection=mock_connection)
-    execute_module = MagicMock()
-    execute_module.side_effect = (
-        {
-            'invocation': {'module_args': module_arg_return},
-            'output_path': 'update_output_path',
-            'task_pid': 666,
-            'cancel_id': 'update_cancel_id',
-        },
-        {
-            'invocation': {'module_args': module_arg_return},
-            'failed': True,
-            'msg': 'Module tmpdir ''...'' does not exist"',
-            'recreate_tmpdir': True,
-        },
-        {
-            'invocation': {'module_args': module_arg_return},
-            'output_path': 'update_output_path',
-            'task_pid': 666,
-            'cancel_id': 'update_cancel_id',
-        },
-    )
-    monkeypatch.setattr(plugin, '_execute_module', execute_module)
-    monkeypatch.setattr(plugin, '_transfer_file', MagicMock())
-
-    def test_make_tmp_path():
-        mock_connection._shell.tmpdir = 'shell_tmpdir_2'
-
-    monkeypatch.setattr(plugin, '_make_tmp_path', test_make_tmp_path)
-
-    actual = plugin.run()
-
-    assert reboot_mock.call_count == 1
-    assert mock_connection._shell.tmpdir == 'shell_tmpdir_2'
-    assert execute_module.call_count == 3
+def test_connection_failures_during_poll(monkeypatch):
+    mock_warning = MagicMock()
+    monkeypatch.setattr(win_updates.display, "warning", mock_warning)
+    actual = run_action(monkeypatch, 'poll_error1.txt', {
+        'category_names': ['*'],
+    })
 
     assert actual['changed']
-    assert not actual['reboot_required']
-    assert actual['found_update_count'] == 6
+    assert actual['reboot_required']
+    assert actual['rebooted'] is False
+    assert actual['found_update_count'] == 3
     assert actual['failed_update_count'] == 0
-    assert actual['installed_update_count'] == 6
-    assert actual['filtered_updates'] == {}
-    assert len(actual['updates']) == 6
+    assert actual['installed_update_count'] == 3
 
+    assert len(actual['filtered_updates']) == 3
+    for u_id, u in actual['filtered_updates'].items():
+        assert u['id'] == u_id
+        assert u['id'] in UPDATE_INFO
+        u_info = UPDATE_INFO[u['id']]
+        assert u['title'] == u_info['title']
+        assert u['kb'] == [u_info['kb']]
+        assert u['categories'] == u_info['categories']
+        assert not u['downloaded']
+        assert not u['installed']
+
+        if u_info['kb'] == '2267602':
+            assert u['filtered_reason'] == 'blacklist'
+            assert u['filtered_reasons'] == ['reject_list', 'category_names']
+        else:
+            assert u['filtered_reason'] == 'category_names'
+            assert u['filtered_reasons'] == ['category_names']
+
+    assert len(actual['updates']) == 3
     for u_id, u in actual['updates'].items():
         assert u['id'] == u_id
         assert u['id'] in UPDATE_INFO
@@ -614,3 +629,44 @@ def test_reboot_with_tmpdir_cleanup(monkeypatch):
         assert u['categories'] == u_info['categories']
         assert u['downloaded']
         assert u['installed']
+
+    assert mock_warning.call_count == 1
+    assert mock_warning.mock_calls[0][1] == ('Connection failure when polling update result - attempting to retry: connection error',)
+
+
+def test_multiple_connection_failures_during_poll(monkeypatch):
+    mock_warning = MagicMock()
+    monkeypatch.setattr(win_updates.display, "warning", mock_warning)
+    actual = run_action(monkeypatch, 'poll_error2.txt', {
+        'category_names': ['*'],
+    })
+
+    assert actual['unreachable']
+    assert actual['msg'] == 'connection error'
+
+    assert mock_warning.call_count == 3
+    assert mock_warning.mock_calls[0][1] == ('Connection failure when polling update result - attempting to retry: connection error',)
+    assert mock_warning.mock_calls[1][1] == ('Unknown failure when polling update result - attempting to cancel task: connection error',)
+    assert mock_warning.mock_calls[2][1] == ('Unknown failure when cancelling update task: connection error',)
+
+
+def test_repeated_update(monkeypatch):
+    reboot_mock = MagicMock()
+    reboot_mock.return_value = {'failed': False}
+    monkeypatch.setattr(win_updates, 'reboot_host', reboot_mock)
+
+    actual = run_action(monkeypatch, 'repeated_update.txt', {
+        'category_names': ['*'],
+        'reboot': True,
+    })
+
+    assert actual['failed']
+    assert re.match(r'An update loop was detected,.*\. Updates in the reboot loop are: 501ef1af-14f0-4cb5-aa9b-aa340b9f9d2a', actual['msg'])
+    assert actual['failed_update_count'] == 1
+    assert actual['installed_update_count'] == 2
+    assert actual['found_update_count'] == 3
+    assert actual['updates']['85604fae-a5c5-4f6d-9012-3d86be1bccce']['installed']
+    assert actual['updates']['5e406f0e-59fa-432d-bb9a-77d2db6f74ec']['installed']
+    assert not actual['updates']['501ef1af-14f0-4cb5-aa9b-aa340b9f9d2a']['installed']
+    assert actual['updates']['501ef1af-14f0-4cb5-aa9b-aa340b9f9d2a']['failure_hresult_code'] == -1
+    assert actual['updates']['501ef1af-14f0-4cb5-aa9b-aa340b9f9d2a']['failure_msg'] == 'Unknown WUA HRESULT -1 (UNKNOWN 0xFFFFFFFF)'
